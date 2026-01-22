@@ -25,7 +25,7 @@ jobs:
     - name: Install dependencies and build
       run: |
         cd react-task-manager
-        npm Install 
+        npm install 
         npm run build
 
     - name: Configure AWS credentials
