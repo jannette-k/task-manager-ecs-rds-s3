@@ -1,0 +1,33 @@
+name: backend CI/CD
+
+on:
+  push:
+    branches: [ 'main' ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v5.1.1
+      with:
+        aws-region: eu-north-1
+        role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+
+    - name: Login to Amazon ECR
+      run: |
+        aws ecr get-login-password --region $AWS_REGION docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URI }}
+
+    - name: Build Docker image
+      run: |
+        docker build -t backend:latest ./nest-task-manager
+        docker tag backend:latest ${{ secrets.AWS_ECR_URI }}:${{ github.sha }}
+
+    - name: Push to ECR
+      run: docker push ${{ secrets.AWS_ECR_URI }}:${{ github.sha }}
