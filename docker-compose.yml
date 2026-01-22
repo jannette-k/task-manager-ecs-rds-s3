@@ -1,0 +1,36 @@
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgresdb
+    env_file:
+      - ./nest-task-manager/.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    ports:
+      - "5342:5432"
+  backend:
+    build:
+      context: ./nest-task-manager
+      dockerfile: Dockerfile.dev
+    container_name: backend  
+    env_file:
+      - ./nest-task-manager/.env
+    depends_on:
+      - postgres
+    ports:
+      - "5000:5000"
+
+  frontend:
+    build:
+      context: ./react-task-manager
+      dockerfile: Dockerfile.dev
+    container_name: frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

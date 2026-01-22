@@ -1,0 +1,14 @@
+# Normalize all text files to LF in repo
+* text=auto
+
+# Force SQL and TOML files to LF
+*.sql text eol=lf
+*.toml text eol=lf
+* text=auto
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
