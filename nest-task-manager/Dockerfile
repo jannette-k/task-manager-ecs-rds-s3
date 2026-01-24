@@ -5,7 +5,7 @@ RUN npm ci --only=production
 COPY . .
 CMD ["node", "dist/main.js"]
 
-# Stage 1: Build
+# Stage 1: Build  
 # FROM node:24-alpine AS build
 
 # WORKDIR /app
