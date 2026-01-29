@@ -33,4 +33,4 @@ jobs:
         role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
 
     - name: Sync build to S3
-      run: aws s3 sync react-task-manager/build s3://task-manager-app254 --delete
+      run: aws s3 sync react-task-manager/build s3://task-manager-app-254 --delete
