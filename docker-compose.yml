@@ -13,7 +13,7 @@ services:
   backend:
     build:
       context: ./nest-task-manager
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
     container_name: backend  
     env_file:
       - ./nest-task-manager/.env
@@ -21,16 +21,5 @@ services:
       - postgres
     ports:
       - "5000:5000"
-
-  frontend:
-    build:
-      context: ./react-task-manager
-      dockerfile: Dockerfile.dev
-    container_name: frontend
-    ports:
-      - "8080:80"
-    depends_on:
-      - backend
-
 volumes:
   postgres_data:
