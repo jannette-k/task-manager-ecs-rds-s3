@@ -2,10 +2,17 @@ name: Frontend CI/CD
 
 on:
   push:
-    branches: [ dev ]
+    branches: [ 'dev' ]
+  workflow_dispatch:
+
+
+env:
+  AWS_REGION: eu-north-1
+  S3_BUCKET: ${{ vars.S3_BUCKET }}
 
 jobs:
   deploy:
+    name: Build and Deploy to S3
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -18,19 +25,31 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '24'
+        node-version: '20' # Node 24 is not LTS yet — 20 is the current LTS
+        cache: 'npm' # caches node_modules between runs for faster installs
+        cache-dependency-path: react-task-manager/package-lock.json
 
-    - name: Install dependencies and build
+    - name: Install dependencies
       run: |
         cd react-task-manager
         npm ci
+
+    - name: Build
+      run: |
+        cd react-task-manager
         npm run build
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v5.1.1
+    - name: Configure AWS credentials via OIDC
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        aws-region: eu-north-1
-        role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
 
     - name: Sync build to S3
-      run: aws s3 sync react-task-manager/build s3://task-manager-app-254 --delete
+      run: |
+        aws s3 sync react-task-manager/build s3://${{ env.S3_BUCKET }} \
+          --delete \
+          --cache-control "public, max-age=31536000, immutable"
+
+    - name: Deployment complete
+      run: echo "✅ Frontend successfully deployed to s3://${{ env.S3_BUCKET }}"

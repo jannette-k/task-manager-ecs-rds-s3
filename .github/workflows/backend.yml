@@ -1,39 +1,211 @@
-name: backend CI/CD
+name: Backend CI/CD
 
 on:
   push:
     branches: [ 'dev' ]
-
   workflow_dispatch:
 
 
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+  TASK_DEFINITION_FAMILY: ${{ vars.TASK_DEFINITION_FAMILY }}
+  CONTAINER_NAME: ${{ vars.CONTAINER_NAME }}
+  DATABASE_URL_SECRET_ARN: ${{ vars.DATABASE_URL_SECRET_ARN }}
+
+# ─────────────────────────────────────────────
+# JOB 1: Build and push Docker image to ECR
+# ─────────────────────────────────────────────
 jobs:
   build-and-push:
+    name: Build, Tag and Push Image to ECR
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
+
+    outputs:
+      image-uri: ${{ steps.build-push.outputs.image-uri }}
+      new-task-def-arn: ${{ steps.register-task-def.outputs.new-task-def-arn }}
+
     steps:
-    - name: Checkout code
+    - name: Checkout source code
       uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v5.1.1
+    - name: Configure AWS credentials via OIDC
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        aws-region: us-east-1
-        role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+        aws-region: ${{ env.AWS_REGION }}
+        role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
 
     - name: Login to Amazon ECR
-      run: |
-        aws ecr get-login-password --region $AWS_REGION \
-        | docker login \
-        --username AWS \
-        --password-stdin ${{ secrets.AWS_ECR_URI }}
+      id: ecr-login
+      uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build Docker image
+    - name: Build, tag and push Docker image to ECR
+      id: build-push
+      env:
+        ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t backend:latest ./nest-task-manager
-        docker tag backend:latest ${{ secrets.AWS_ECR_URI }}:${{ github.sha }}
+        IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-    - name: Push to ECR
-      run: docker push ${{ secrets.AWS_ECR_URI }}:${{ github.sha }}
+        docker build -t "$IMAGE_URI" .
+        docker push "$IMAGE_URI"
+
+        # Also tag as latest
+        docker tag "$IMAGE_URI" "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+        docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+
+        echo "image-uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+    - name: Fetch current ECS task definition
+      id: get-task-def
+      run: |
+        aws ecs describe-task-definition \
+          --task-definition "$TASK_DEFINITION_FAMILY" \
+          --query "taskDefinition" \
+          > task-definition.json
+
+    - name: Inject new image URI into task definition
+      id: render-task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ steps.build-push.outputs.image-uri }}
+
+    - name: Register updated task definition
+      id: register-task-def
+      run: |
+        # Strip read-only fields AWS won't accept on re-registration
+        jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+          ${{ steps.render-task-def.outputs.task-definition }} > cleaned-task-def.json
+
+        NEW_TASK_DEF_ARN=$(aws ecs register-task-definition \
+          --cli-input-json file://cleaned-task-def.json \
+          --query "taskDefinition.taskDefinitionArn" \
+          --output text)
+
+        echo "new-task-def-arn=$NEW_TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Run Prisma migrations as a one-off ECS task
+  # ─────────────────────────────────────────────
+  run-migrations:
+    name: Run Prisma Migrations
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Configure AWS credentials via OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Retrieve network config from ECS service
+      id: network-config
+      run: |
+        SERVICE_JSON=$(aws ecs describe-services \
+          --cluster "$ECS_CLUSTER" \
+          --services "$ECS_SERVICE" \
+          --query "services[0].networkConfiguration.awsvpcConfiguration" \
+          --output json)
+
+        SUBNETS=$(echo "$SERVICE_JSON" | jq -r '.subnets | join(",")')
+        SECURITY_GROUPS=$(echo "$SERVICE_JSON" | jq -r '.securityGroups | join(",")')
+        ASSIGN_PUBLIC_IP=$(echo "$SERVICE_JSON" | jq -r '.assignPublicIp')
+
+        echo "subnets=$SUBNETS" >> "$GITHUB_OUTPUT"
+        echo "security-groups=$SECURITY_GROUPS" >> "$GITHUB_OUTPUT"
+        echo "assign-public-ip=$ASSIGN_PUBLIC_IP" >> "$GITHUB_OUTPUT"
+
+    - name: Run one-off ECS migration task
+      id: run-migration
+      run: |
+        TASK_ARN=$(aws ecs run-task \
+          --cluster "$ECS_CLUSTER" \
+          --task-definition "${{ needs.build-and-push.outputs.new-task-def-arn }}" \
+          --launch-type FARGATE \
+          --network-configuration "awsvpcConfiguration={
+            subnets=[${{ steps.network-config.outputs.subnets }}],
+            securityGroups=[${{ steps.network-config.outputs.security-groups }}],
+            assignPublicIp=${{ steps.network-config.outputs.assign-public-ip }}
+          }" \
+          --overrides "{
+            \"containerOverrides\": [{
+              \"name\": \"$CONTAINER_NAME\",
+              \"command\": [\"npx\", \"prisma\", \"migrate\", \"deploy\"],
+              \"secrets\": [{
+                \"name\": \"DATABASE_URL\",
+                \"valueFrom\": \"$DATABASE_URL_SECRET_ARN\"
+              }]
+            }]
+          }" \
+          --query "tasks[0].taskArn" \
+          --output text)
+
+        echo "Migration task started: $TASK_ARN"
+        echo "task-arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+    - name: Wait for migration task to complete
+      run: |
+        echo "Waiting for migration task to finish..."
+        aws ecs wait tasks-stopped \
+          --cluster "$ECS_CLUSTER" \
+          --tasks "${{ steps.run-migration.outputs.task-arn }}"
+
+    - name: Assert migration task exit code
+      run: |
+        EXIT_CODE=$(aws ecs describe-tasks \
+          --cluster "$ECS_CLUSTER" \
+          --tasks "${{ steps.run-migration.outputs.task-arn }}" \
+          --query "tasks[0].containers[0].exitCode" \
+          --output text)
+
+        echo "Migration container exit code: $EXIT_CODE"
+
+        if [ "$EXIT_CODE" != "0" ]; then
+          echo "❌ Prisma migration failed with exit code $EXIT_CODE"
+          exit 1
+        fi
+
+        echo "✅ Prisma migrations completed successfully"
+
+  # ─────────────────────────────────────────────
+  # JOB 3: Deploy new image to ECS service
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Deploy to ECS Service
+    runs-on: ubuntu-latest
+    needs: [ build-and-push, run-migrations ]
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Configure AWS credentials via OIDC
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Deploy updated task definition to ECS service
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+      with:
+        task-definition: ${{ needs.build-and-push.outputs.new-task-def-arn }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+        wait-for-minutes: 10
+
+    - name: Deployment complete
+      run: |
+        echo "✅ ECS service $ECS_SERVICE successfully updated with image:"
+        echo "   ${{ needs.build-and-push.outputs.image-uri }}"
