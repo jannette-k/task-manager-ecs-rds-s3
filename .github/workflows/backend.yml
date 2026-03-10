@@ -127,6 +127,15 @@ jobs:
         echo "subnets=$SUBNETS" >> "$GITHUB_OUTPUT"
         echo "security-groups=$SECURITY_GROUPS" >> "$GITHUB_OUTPUT"
         echo "assign-public-ip=$ASSIGN_PUBLIC_IP" >> "$GITHUB_OUTPUT"
+    - name: Get DATABASE_URL from Secrets Manager
+      id: get-secret
+      run: |
+        DATABASE_URL=$(aws secretsmanager get-secret-value \
+          --secret-id "$DATABASE_URL_SECRET_ARN" \
+          --query "SecretString" \
+          --output text)
+        echo "::add-mask::$DATABASE_URL"
+        echo "database-url=$DATABASE_URL" >> "$GITHUB_OUTPUT"
 
     - name: Run one-off ECS migration task
       id: run-migration
@@ -139,19 +148,19 @@ jobs:
             subnets=[${{ steps.network-config.outputs.subnets }}],
             securityGroups=[${{ steps.network-config.outputs.security-groups }}],
             assignPublicIp=${{ steps.network-config.outputs.assign-public-ip }}
-          }" \
-          --overrides "{
-            \"containerOverrides\": [{
-              \"name\": \"$CONTAINER_NAME\",
-              \"command\": [\"npx\", \"prisma\", \"migrate\", \"deploy\"],
-              \"secrets\": [{
-                \"name\": \"DATABASE_URL\",
-                \"valueFrom\": \"$DATABASE_URL_SECRET_ARN\"
+            }" \
+            --overrides "{
+              \"containerOverrides\": [{
+                \"name\": \"$CONTAINER_NAME\",
+                \"command\": [\"npx\", \"prisma\", \"migrate\", \"deploy\"],
+                \"environment\": [{
+                  \"name\": \"DATABASE_URL\",
+                  \"value\": \"${{ steps.get-secret.outputs.database-url }}\"
+                }]
               }]
-            }]
-          }" \
-          --query "tasks[0].taskArn" \
-          --output text)
+            }" \
+            --query "tasks[0].taskArn" \
+            --output text)
 
         echo "Migration task started: $TASK_ARN"
         echo "task-arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
