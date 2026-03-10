@@ -50,6 +50,7 @@ jobs:
         ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
+        cd nest-task-manager
         IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
         docker build -t "$IMAGE_URI" .
@@ -68,7 +69,6 @@ jobs:
           --task-definition "$TASK_DEFINITION_FAMILY" \
           --query "taskDefinition" \
           > task-definition.json
-
 
     - name: Inject new image URI into task definition
       id: render-task-def
