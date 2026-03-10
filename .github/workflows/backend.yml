@@ -69,6 +69,7 @@ jobs:
           --query "taskDefinition" \
           > task-definition.json
 
+
     - name: Inject new image URI into task definition
       id: render-task-def
       uses: aws-actions/amazon-ecs-render-task-definition@v1
