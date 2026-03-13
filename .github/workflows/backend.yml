@@ -131,7 +131,7 @@ jobs:
       id: get-secret
       run: |
         DATABASE_URL=$(aws secretsmanager get-secret-value \
-          --secret-id "$DATABASE_URL_SECRET_ARN" \
+          --secret-id "${{ vars.DATABASE_URL_SECRET_ARN }}" \
           --query "SecretString" \
           --output text)
         echo "::add-mask::$DATABASE_URL"
@@ -175,7 +175,7 @@ jobs:
     - name: Assert migration task exit code
       run: |
         EXIT_CODE=$(aws ecs describe-tasks \
-          --cluster "$ECS_CLUSTER" \
+          --cluster "${{ vars.ECS_CLUSTER }}" \
           --tasks "${{ steps.run-migration.outputs.task-arn }}" \
           --query "tasks[0].containers[0].exitCode" \
           --output text)
