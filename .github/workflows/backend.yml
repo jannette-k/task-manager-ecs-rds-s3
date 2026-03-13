@@ -168,11 +168,30 @@ jobs:
     - name: Wait for migration task to complete
       run: |
         echo "Waiting for migration task to finish..."
-        aws ecs wait tasks-stopped \
-          --cluster "$ECS_CLUSTER" \
-          --tasks "${{ steps.run-migration.outputs.task-arn }}"
 
-    - name: Assert migration task exit code
+        for i in $(seq 1 30); do
+          STATUS=$(aws ecs describe-tasks \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --tasks "${{ steps.run-migration.outputs.task-arn }}" \
+            --query "tasks[0].lastStatus" \
+            --output text)
+          
+          echo "Attempt $i — Task status: $STATUS"
+          
+          if [ "$STATUS" = "STOPPED" ]; then
+            echo "Task stopped."
+            break
+          fi
+
+          if [ "$i" = "30" ]; then
+            echo "❌ Task did not stop within timeout"
+            exit 1
+          fi
+          
+          sleep 20
+        done
+
+    - name: Assert migration exit code
       run: |
         EXIT_CODE=$(aws ecs describe-tasks \
           --cluster "${{ vars.ECS_CLUSTER }}" \
@@ -184,10 +203,19 @@ jobs:
 
         if [ "$EXIT_CODE" != "0" ]; then
           echo "❌ Prisma migration failed with exit code $EXIT_CODE"
+
+          # Print stop reason for debugging
+          STOP_REASON=$(aws ecs describe-tasks \
+            --cluster "${{ vars.ECS_CLUSTER }}" \
+            --tasks "${{ steps.run-migration.outputs.task-arn }}" \
+            --query "tasks[0].stoppedReason" \
+            --output text)
+          echo "Stop reason: $STOP_REASON"
+
           exit 1
         fi
 
-        echo "✅ Prisma migrations completed successfully"
+        echo "✅ Prisma migrations completed successfully"    
 
   # ─────────────────────────────────────────────
   # JOB 3: Deploy new image to ECS service
